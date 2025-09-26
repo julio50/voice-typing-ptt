@@ -1,0 +1,14 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Voice Typing Tray
+Comment=System tray control for voice typing with push-to-talk
+Exec=/home/julio/Development/voice_typing/voice_tray_qt.py
+Icon=/home/julio/Development/voice_typing/tray_icon_ready.png
+Terminal=false
+StartupNotify=false
+Categories=Utility;Accessibility;
+Keywords=voice;speech;typing;transcription;microphone;
+StartupWMClass=voice_tray_qt
+NoDisplay=false
+X-GNOME-Autostart-enabled=true
