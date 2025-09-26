@@ -108,7 +108,7 @@ class VoiceTypingTray(QObject):
         try:
             # Try to load the tray icon files first
             for state in ["stopped", "ready", "recording", "processing"]:
-                icon_file = self.script_dir / f"tray_icon_{state}.png"
+                icon_file = self.script_dir / "icons" / f"tray_icon_{state}.png"
                 if icon_file.exists():
                     self.icons[state] = QIcon(str(icon_file))
                     print(f"Loaded tray icon: {icon_file}")

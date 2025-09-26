@@ -23,8 +23,14 @@ if [[ -z "$keyboard_id" ]]; then
     exit 1
 fi
 
+# Load configuration
+CONFIG_FILE="${CONFIG_FILE:-$(dirname "$0")/config.env}"
+if [[ -f "$CONFIG_FILE" ]]; then
+    source "$CONFIG_FILE"
+fi
+
 # Security: Use configurable server endpoint
-WHISPER_SERVER="${WHISPER_SERVER:-http://192.168.1.57:8002}"
+WHISPER_SERVER="${WHISPER_SERVER:-http://localhost:8080}"
 
 clear
 echo "🎤 Voice Typing Client"
@@ -51,7 +57,7 @@ process_audio() {
 
     # Send to whisper with timeout and error handling
     local curl_output
-    if ! curl_output=$(timeout 10 curl -sf "$WHISPER_SERVER/v1/audio/transcriptions" \
+    if ! curl_output=$(timeout 10 curl -sf "${WHISPER_SERVER}/v1/audio/transcriptions" \
             -H "Content-Type: multipart/form-data" \
             -F "file=@${audio_file}" \
             -F "temperature=0.2" \
