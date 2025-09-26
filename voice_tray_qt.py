@@ -320,7 +320,7 @@ class VoiceTypingTray(QObject):
         layout.addWidget(QLabel(f"Log: {self.log_path}"))
 
         close_btn = QPushButton("Close")
-        close_btn.clicked.connect(dialog.close)
+        close_btn.clicked.connect(dialog.accept)
         layout.addWidget(close_btn)
 
         dialog.setLayout(layout)
