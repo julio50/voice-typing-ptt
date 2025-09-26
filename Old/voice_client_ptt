@@ -1,0 +1,194 @@
+#!/bin/bash
+# Push-to-talk voice typing client
+# Hold Right Ctrl to record and type
+
+# fifo queue to hold temporary audio file names
+audio_fifo=$(mktemp); rm "$audio_fifo" ; mkfifo "$audio_fifo"
+
+## create a trap to remove temp files on untimely exit
+cleanup() {
+    rm -f /tmp/tmp.txt "$audio_fifo"
+    pkill -f "xinput test"
+}
+trap cleanup 0
+
+# Find the main keyboard device (Dell KB216 in this case)
+keyboard_id=$(xinput list | grep "Dell KB216 Wired Keyboard" | head -1 | grep -o 'id=[0-9]*' | cut -d= -f2)
+
+if [[ -z "$keyboard_id" ]]; then
+    echo "Available keyboards:"
+    xinput list | grep -i keyboard
+    echo "Error: Could not find Dell KB216 keyboard device."
+    exit 1
+fi
+
+echo "Using keyboard ID: $keyboard_id"
+
+echo "Push-to-talk ready. Hold Left Ctrl to record. Press Ctrl+C to exit."
+
+# function to process audio files from queue
+trans(){
+    echo "[TRANSCRIPTION HANDLER STARTED]" >&2
+    while read audio; do
+        echo "[PROCESSING AUDIO]: $audio" >&2
+        # Send audio file to whisper.cpp using curl with timeout
+        curl_output=$(timeout 10 curl -s "http://192.168.1.57:8002/v1/audio/transcriptions" \
+                        -H "Content-Type: multipart/form-data" \
+                        -F "file=@$audio" \
+                        -F "temperature=0.2" \
+                        -F "response-format=json")
+
+        # Check if curl timed out or failed
+        if [[ $? -ne 0 ]]; then
+            echo "[ERROR]: Transcription failed or timed out" >&2
+            rm -f "$audio"
+            continue
+        fi
+
+        # remove temporary audio file
+        rm -f "$audio"
+
+        # Extract text from JSON response using jq or fallback method
+        if command -v jq >/dev/null 2>&1; then
+            # Use jq if available
+            text=$(echo "$curl_output" | jq -r '.text // empty')
+        else
+            # Fallback: extract text using grep and sed
+            text=$(echo "$curl_output" | grep -o '"text":"[^"]*"' | sed 's/"text":"\(.*\)"/\1/')
+        fi
+
+        # If text extraction failed, try the original output as plain text
+        if [[ -z "$text" ]]; then
+            text="$curl_output"
+        fi
+
+        echo "$text"
+
+        # Convert to lowercase for case-insensitive comparison
+        text_lower=$(echo "$text" | tr '[:upper:]' '[:lower:]')
+
+        # Common whisper hallucinations and false positives blacklist
+        blacklist=("thanks for watching" "thank you" "you" "yeah" "bye"
+                   "subscribe" "like and subscribe" "please subscribe"
+                   "music" "[music]" "[applause]" "[laughter]"
+                   "thank you for watching" "see you next time"
+                   "bye bye" "okay" "um" "uh")
+
+        # Check against blacklist
+        is_blacklisted=false
+        for phrase in "${blacklist[@]}"; do
+            if [[ "$text_lower" == "$phrase" ]]; then
+                is_blacklisted=true
+                break
+            fi
+        done
+
+        # Filter criteria:
+        # - More than 1 word
+        # - At least 6 characters
+        # - Not in blacklist
+        # - No brackets (indicates non-speech sounds)
+        word_count=$(echo "$text" | wc -w)
+        char_count=${#text}
+
+        if [[ $word_count -gt 1 ]] && [[ $char_count -ge 6 ]] \
+            && [[ "$is_blacklisted" == "false" ]] \
+            && [[ "$text" != *'['* ]] && [[ "$text" != *']'* ]]; then
+            echo "[TYPING]: $text" >&2
+            # Clean text of any non-printable characters
+            clean_text=$(echo "$text" | tr -cd '[:print:][:space:]')
+            ydotool type " $clean_text"
+        else
+            echo "[FILTERED]: $text (words:$word_count chars:$char_count blacklisted:$is_blacklisted)" >&2
+        fi &
+    done < "$audio_fifo"
+    echo "[TRANSCRIPTION HANDLER STOPPED]" >&2
+    #cleanup
+    rm -f "$audio_fifo"
+}
+
+# Start transcription handler in background
+trans &
+
+# Monitor Left Ctrl key (keycode 37)
+xinput test "$keyboard_id" 2>/dev/null | while read line; do
+    echo "Key event: $line" >&2  # Debug output
+    if [[ "$line" =~ "key press".*"37" ]]; then
+        # Left Ctrl pressed - start recording
+        echo "[RECORDING...] Hold Left Ctrl" >&2
+        tmp=$(mktemp --suffix=.wav)
+
+        # Record until silence or key release
+        rec -c 1 -r 44100 -t wav "$tmp" silence 1 0.05 2% 1 3.0 3% &
+        rec_pid=$!
+
+        # Continue reading for key release
+        while read key_line; do
+            echo "Key event while recording: $key_line" >&2
+            if [[ "$key_line" =~ "key release".*"37" ]]; then
+                # Left Ctrl released - stop recording
+                kill $rec_pid 2>/dev/null
+                wait $rec_pid 2>/dev/null
+                echo "[PROCESSING...]" >&2
+
+                # Check if recording has content and process immediately
+                if [[ -f "$tmp" ]] && [[ $(stat -c%s "$tmp") -gt 1000 ]]; then
+                    echo "[TRANSCRIBING...]" >&2
+
+                    # Process directly instead of using fifo
+                    curl_output=$(timeout 10 curl -s "http://192.168.1.57:8002/v1/audio/transcriptions" \
+                            -H "Content-Type: multipart/form-data" \
+                            -F "file=@$tmp" \
+                            -F "temperature=0.2" \
+                            -F "response-format=json")
+
+                    rm -f "$tmp"
+
+                    if [[ $? -eq 0 ]]; then
+                        # Extract text from JSON response
+                        if command -v jq >/dev/null 2>&1; then
+                            text=$(echo "$curl_output" | jq -r '.text // empty')
+                        else
+                            text=$(echo "$curl_output" | grep -o '"text":"[^"]*"' | sed 's/"text":"\(.*\)"/\1/')
+                        fi
+
+                        if [[ -n "$text" ]]; then
+                            echo "Transcribed: $text" >&2
+
+                            # Apply the same filtering logic
+                            text_lower=$(echo "$text" | tr '[:upper:]' '[:lower:]')
+                            blacklist=("thanks for watching" "thank you" "you" "yeah" "bye")
+
+                            is_blacklisted=false
+                            for phrase in "${blacklist[@]}"; do
+                                if [[ "$text_lower" == "$phrase" ]]; then
+                                    is_blacklisted=true
+                                    break
+                                fi
+                            done
+
+                            word_count=$(echo "$text" | wc -w)
+                            char_count=${#text}
+
+                            if [[ $word_count -gt 1 ]] && [[ $char_count -ge 6 ]] \
+                                && [[ "$is_blacklisted" == "false" ]] \
+                                && [[ "$text" != *'['* ]] && [[ "$text" != *']'* ]]; then
+                                echo "[TYPING]: $text" >&2
+                                clean_text=$(echo "$text" | tr -cd '[:print:][:space:]')
+                                ydotool type " $clean_text"
+                            else
+                                echo "[FILTERED]: $text" >&2
+                            fi
+                        fi
+                    else
+                        echo "[TRANSCRIPTION FAILED]" >&2
+                    fi
+                else
+                    echo "[NO AUDIO DETECTED]" >&2
+                    rm -f "$tmp"
+                fi
+                break
+            fi
+        done
+    fi
+done

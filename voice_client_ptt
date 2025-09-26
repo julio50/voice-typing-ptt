@@ -1,0 +1,147 @@
+#!/bin/bash
+# Push-to-talk voice typing client
+# Hold Left Shift + Tab to record and type
+
+set -euo pipefail
+
+## create a trap to remove temp files on untimely exit
+cleanup() {
+    rm -f /tmp/tmp.txt
+    pkill -f "xinput test" 2>/dev/null || true
+    # Clean up any temp audio files
+    find /tmp -name "tmp.*" -user "$USER" -mmin +5 -delete 2>/dev/null || true
+}
+trap cleanup 0
+
+# Find the main keyboard device (Dell KB216 in this case)
+keyboard_id=$(xinput list | grep "Dell KB216 Wired Keyboard" | head -1 | grep -o 'id=[0-9]*' | cut -d= -f2)
+
+if [[ -z "$keyboard_id" ]]; then
+    echo "Available keyboards:"
+    xinput list | grep -i keyboard
+    echo "Error: Could not find Dell KB216 keyboard device."
+    exit 1
+fi
+
+# Security: Use configurable server endpoint
+WHISPER_SERVER="${WHISPER_SERVER:-http://192.168.1.57:8002}"
+
+clear
+echo "🎤 Voice Typing Client"
+echo "═══════════════════════"
+echo "📎 Keyboard: Dell KB216 (ID: $keyboard_id)"
+echo "🔑 Hotkey: Left Shift + Left Alt"
+echo "🎯 Server: $WHISPER_SERVER"
+echo ""
+echo "🟢 Ready - Hold hotkey to record, Ctrl+C to exit"
+echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+# Function to safely transcribe audio file
+process_audio() {
+    local audio_file="$1"
+
+    # Validate file exists and has content
+    if [[ ! -f "$audio_file" ]] || [[ $(stat -c%s "$audio_file") -lt 1000 ]]; then
+        echo "🔇 No audio detected" >&2
+        rm -f "$audio_file"
+        return 1
+    fi
+
+    echo "🧠 Transcribing..." >&2
+
+    # Send to whisper with timeout and error handling
+    local curl_output
+    if ! curl_output=$(timeout 10 curl -sf "$WHISPER_SERVER/v1/audio/transcriptions" \
+            -H "Content-Type: multipart/form-data" \
+            -F "file=@${audio_file}" \
+            -F "temperature=0.2" \
+            -F "response-format=json" 2>/dev/null); then
+        echo "❌ Transcription failed" >&2
+        rm -f "$audio_file"
+        return 1
+    fi
+
+    # Clean up audio file immediately
+    rm -f "$audio_file"
+
+    # Extract text safely
+    local text
+    if command -v jq >/dev/null 2>&1; then
+        text=$(echo "$curl_output" | jq -r '.text // empty' 2>/dev/null)
+    else
+        text=$(echo "$curl_output" | grep -o '"text":"[^"]*"' | sed 's/"text":"\(.*\)"/\1/' 2>/dev/null)
+    fi
+
+    # Validate extracted text
+    if [[ -z "$text" ]]; then
+        echo "⚠️  No text extracted" >&2
+        return 1
+    fi
+
+    echo "💬 \"$text\"" >&2
+
+    # Apply filtering
+    local text_lower word_count char_count is_blacklisted=false
+    text_lower=$(echo "$text" | tr '[:upper:]' '[:lower:]')
+    word_count=$(echo "$text" | wc -w)
+    char_count=${#text}
+
+    # Blacklist check
+    local blacklist=("thanks for watching" "thank you" "you" "yeah" "bye"
+                    "subscribe" "like and subscribe" "please subscribe"
+                    "music" "[music]" "[applause]" "[laughter]"
+                    "thank you for watching" "see you next time"
+                    "bye bye" "okay" "um" "uh")
+
+    for phrase in "${blacklist[@]}"; do
+        if [[ "$text_lower" == "$phrase" ]]; then
+            is_blacklisted=true
+            break
+        fi
+    done
+
+    # Apply filters and type if passed
+    if [[ $word_count -gt 1 ]] && [[ $char_count -ge 6 ]] \
+        && [[ "$is_blacklisted" == "false" ]] \
+        && [[ "$text" != *'['* ]] && [[ "$text" != *']'* ]]; then
+        echo "⌨️  Typing..." >&2
+        # Sanitize text for security
+        local clean_text
+        clean_text=$(echo "$text" | tr -cd '[:print:][:space:]' | head -c 500)
+        ydotool type " $clean_text"
+    else
+        echo "🚫 Filtered (${word_count}w, ${char_count}c)" >&2
+    fi
+}
+
+# Monitor Left Shift + Left Alt combination (keycodes 50 + 64)
+xinput test "$keyboard_id" 2>/dev/null | while read line; do
+
+    # Start recording when both Left Shift (50) AND Left Alt (64) are pressed
+    if [[ "$line" =~ "key press".*"50" ]] || [[ "$line" =~ "key press".*"64" ]]; then
+        # Check if both keys are currently pressed using xinput query
+        if xinput query-state "$keyboard_id" | grep -q "key\[50\]=down" && \
+           xinput query-state "$keyboard_id" | grep -q "key\[64\]=down"; then
+            echo "🔴 Recording..." >&2
+            tmp=$(mktemp --suffix=.wav)
+
+            # Record until silence or key release
+            rec -c 1 -r 44100 -t wav "$tmp" silence 1 0.05 2% 1 3.0 3% &
+            rec_pid=$!
+
+            # Continue reading for key release
+            while read key_line; do
+                if [[ "$key_line" =~ "key release".*(50|64) ]]; then
+                    # Either Shift or Alt released - stop recording
+                    kill $rec_pid 2>/dev/null
+                    wait $rec_pid 2>/dev/null
+                    echo "⏳ Processing..." >&2
+
+                    # Process audio using secure function (keeps speed)
+                    process_audio "$tmp"
+                    break
+                fi
+            done
+        fi
+    fi
+done
