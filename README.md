@@ -2,7 +2,7 @@
 
 A fast, secure, and elegant voice typing solution with push-to-talk functionality. Perfect for hands-free text input with real-time transcription.
 
-![Voice Typing Demo](https://img.shields.io/badge/Status-Ready-green) ![Platform](https://img.shields.io/badge/Platform-Linux-blue) ![License](https://img.shields.io/badge/License-Apache%202.0-orange)
+![Voice Typing Demo](https://img.shields.io/badge/Status-Ready-green) ![Platform](https://img.shields.io/badge/Platform-Linux-blue) ![Debian](https://img.shields.io/badge/Tested-Debian%20Bookworm-red) ![License](https://img.shields.io/badge/License-Apache%202.0-orange)
 
 ## ✨ Features
 
@@ -33,6 +33,8 @@ A fast, secure, and elegant voice typing solution with push-to-talk functionalit
 ## 🚀 Quick Start
 
 ### Prerequisites
+
+**Tested on Debian 12 (Bookworm)** - Should work on most modern Linux distributions.
 
 ```bash
 # Install system dependencies
